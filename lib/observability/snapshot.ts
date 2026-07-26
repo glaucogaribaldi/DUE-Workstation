@@ -56,9 +56,9 @@ function isPrivateIpv4(hostname: string): boolean {
   return (
     a === 10 ||
     a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254)
+    (a === 192 && b === 168)
   );
 }
 
@@ -70,8 +70,8 @@ function allowedEndpoint(rawUrl: string): URL | null {
     return null;
   }
 
-  if (!['http:', 'https:'].includes(url.protocol)) return null;
-  if (url.username || url.password) return null;
+  if (!["http:", "https:"].includes(url.protocol)) return null;
+  if (url.username || url.password || url.search || url.hash) return null;
 
   const hostname = url.hostname.toLowerCase();
   const configuredHosts = (readEnv("DUE_OBSERVABILITY_ALLOWED_HOSTS") ?? "")
@@ -89,8 +89,8 @@ function allowedEndpoint(rawUrl: string): URL | null {
   return url;
 }
 
-function safeSource(url: URL): string {
-  return `${url.protocol}//${url.host}${url.pathname}`;
+function remoteSource(component: Exclude<ObservationComponent, "frontend">): string {
+  return `remote:${component}`;
 }
 
 function pickString(payload: Record<string, unknown>, key: string): string | null {
@@ -154,7 +154,7 @@ async function readRemote(
       },
       error: {
         code: "ENDPOINT_NOT_ALLOWED",
-        message: "Endpoint must use HTTP(S), contain no embedded credentials, and target an allowed private host",
+        message: "Endpoint must use HTTP(S), contain no credentials, query, or fragment, and target an allowed private host",
       },
     };
   }
@@ -179,7 +179,7 @@ async function readRemote(
         component,
         status: "degraded",
         observedAt,
-        source: safeSource(endpoint),
+        source: remoteSource(component),
         data: {
           configured: true,
           httpStatus: response.status,
@@ -205,7 +205,7 @@ async function readRemote(
         component,
         status: response.ok ? "degraded" : "unavailable",
         observedAt,
-        source: safeSource(endpoint),
+        source: remoteSource(component),
         data: {
           configured: true,
           httpStatus: response.status,
@@ -226,7 +226,7 @@ async function readRemote(
       component,
       status: normalizeStatus(reportedStatus, response.ok),
       observedAt,
-      source: safeSource(endpoint),
+      source: remoteSource(component),
       data: {
         configured: true,
         httpStatus: response.status,
@@ -248,7 +248,7 @@ async function readRemote(
       component,
       status: "unavailable",
       observedAt,
-      source: safeSource(endpoint),
+      source: remoteSource(component),
       data: {
         configured: true,
         httpStatus: null,
