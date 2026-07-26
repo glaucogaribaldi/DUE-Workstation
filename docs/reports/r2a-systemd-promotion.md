@@ -32,6 +32,7 @@ git fetch origin
 git checkout master
 git reset --hard origin/master
 test "$(git rev-parse HEAD)" = "2fece0f45150c1ab1bd582e5dc28a932f0e52f60"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 pm2 describe pianodivino-ui
 pgrep -af 'due-action-broker|dist/index.js' || true
 sudo systemctl is-active due-action-broker.service || true
@@ -43,7 +44,7 @@ Non procedere se esiste ancora un processo canary attivo. Un socket residuo può
 ## 2. Build verificata
 
 ```bash
-cd services/due-action-broker
+cd "$REPO_ROOT/services/due-action-broker"
 npm ci
 npm run typecheck
 npm run build
@@ -56,7 +57,7 @@ Tutti i comandi devono terminare con exit code `0`.
 ## 3. Release immutabile
 
 ```bash
-COMMIT="$(git rev-parse HEAD)"
+COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 RELEASE="/opt/due/action-broker/releases/$COMMIT"
 
 sudo install -d -o root -g root -m 0755 /opt/due/action-broker/releases
@@ -65,12 +66,12 @@ sudo cp -a dist package.json package-lock.json "$RELEASE"/
 cd "$RELEASE"
 sudo npm ci --omit=dev --ignore-scripts
 sudo chown -R root:root "$RELEASE"
-sudo find "$RELEASE" -type d -exec chmod 0755 {} +
-sudo find "$RELEASE" -type f -exec chmod 0644 {} +
+sudo chmod 0755 "$RELEASE" "$RELEASE/dist"
+sudo chmod 0644 "$RELEASE/package.json" "$RELEASE/package-lock.json" "$RELEASE/dist/index.js"
 sudo ln -sfn "$RELEASE" /opt/due/action-broker/current
 ```
 
-Il processo systemd legge il codice da `/opt/due/action-broker/current`, non dalla working copy Git.
+Il processo systemd legge il codice da `/opt/due/action-broker/current`, non dalla working copy Git. Non modificare ricorsivamente i permessi interni di `node_modules` dopo `npm ci`.
 
 ## 4. Environment e unit
 
@@ -82,7 +83,7 @@ sudo chown root:root /etc/due/action-broker.env
 sudo chmod 0644 /etc/due/action-broker.env
 
 sudo install -o root -g root -m 0644 \
-  deploy/systemd/due-action-broker.service \
+  "$REPO_ROOT/deploy/systemd/due-action-broker.service" \
   /etc/systemd/system/due-action-broker.service
 
 sudo systemd-analyze verify /etc/systemd/system/due-action-broker.service
