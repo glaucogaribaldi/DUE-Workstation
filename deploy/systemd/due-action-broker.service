@@ -1,0 +1,53 @@
+[Unit]
+Description=DUE Action Broker
+Documentation=https://github.com/glaucogaribaldi/DUE-Workstation
+After=network.target
+ConditionPathIsDirectory=/opt/due/action-broker/current
+ConditionPathExists=/opt/due/action-broker/current/dist/index.js
+
+[Service]
+Type=simple
+User=zava
+Group=zava
+WorkingDirectory=/opt/due/action-broker/current
+EnvironmentFile=-/etc/due/action-broker.env
+Environment=HOME=/home/zava
+Environment=PM2_HOME=/home/zava/.pm2
+Environment=NODE_ENV=production
+Environment=BUILD_VERSION=unknown
+ExecStart=/usr/bin/node /opt/due/action-broker/current/dist/index.js
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=15
+TimeoutStopSec=10
+KillSignal=SIGTERM
+UMask=0007
+RuntimeDirectory=due-action-broker
+RuntimeDirectoryMode=0770
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=due-action-broker
+
+# Hardening: local Unix-socket service only.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/due-action-broker /home/zava/.pm2
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
