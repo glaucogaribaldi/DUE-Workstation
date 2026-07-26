@@ -179,7 +179,7 @@ describe("PM2 adapter", () => {
     let disconnects = 0;
     const client: Pm2Client = {
       connect(callback) {
-        callback(null);
+        callback();
       },
       describe() {
         // Intentionally never calls back.
@@ -200,7 +200,7 @@ describe("PM2 adapter", () => {
     let disconnects = 0;
     const client: Pm2Client = {
       connect(callback) {
-        callback(null);
+        callback();
       },
       describe(_target, callback) {
         callback(null, [
