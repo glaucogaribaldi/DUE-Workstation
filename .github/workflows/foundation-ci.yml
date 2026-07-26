@@ -93,4 +93,4 @@ jobs:
 
       - name: Test rendered artifact
         if: steps.build.outcome == 'success'
-        run: node --test tests/rendered-html.test.mjs
+        run: node --test tests/*.test.mjs
