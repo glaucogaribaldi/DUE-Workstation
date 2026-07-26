@@ -14,28 +14,31 @@ OpenClaw è un componente centrale della FASE R1 e deve essere osservato insieme
 Il primo incremento introduce:
 
 - contratto TypeScript comune;
-- endpoint `GET /api/observability`;
+- endpoint `GET /api/observability` disabilitato per default;
 - health reale del runtime frontend;
 - adapter HTTP read-only per PM2, OpenClaw e GPU;
 - timeout di 1,5 secondi;
 - assenza di cache;
 - risposta chiusa e dichiaratamente `unavailable` quando una sorgente non è configurata;
 - nessuna restituzione del payload remoto integrale;
-- nessun token o credenziale nel risultato.
+- nessun token, URL interno o credenziale nel risultato.
 
 ## Variabili previste
 
+- `DUE_OBSERVABILITY_ENABLED=true`
 - `DUE_PM2_HEALTH_URL`
 - `DUE_OPENCLAW_HEALTH_URL`
 - `DUE_GPU_HEALTH_URL`
 - `DUE_OBSERVABILITY_ALLOWED_HOSTS`
 - `DUE_BUILD_SHA`
 
-Le URL devono usare HTTP(S), non possono contenere credenziali incorporate e devono puntare a loopback, rete privata o host esplicitamente autorizzati.
+Senza `DUE_OBSERVABILITY_ENABLED=true`, l'endpoint restituisce HTTP 503 con il solo stato `disabled`.
+
+Le URL devono usare HTTP(S), non possono contenere credenziali, query string o fragment e devono puntare a loopback, rete privata RFC1918, rete Tailscale/CGNAT oppure host esplicitamente autorizzati. La rete link-local `169.254.0.0/16`, incluso il metadata service cloud, non è ammessa.
 
 ## Stato iniziale previsto
 
-Senza configurazione VPS:
+Con endpoint esplicitamente abilitato ma senza sorgenti VPS configurate:
 
 - frontend: `healthy`, con runtime, uptime e build SHA quando disponibile;
 - PM2: `unavailable / NOT_CONFIGURED`;
@@ -60,7 +63,8 @@ Qualunque intervento VPS dovrà essere documentato con stato precedente, comando
 - branch derivato dal `master` aggiornato;
 - meno di 15 file modificati;
 - lint, build e test verdi;
-- endpoint read-only;
+- endpoint disabilitato per default e read-only;
 - nessun `child_process`, `exec`, PM2 mutativo o comando GPU;
 - nessun payload remoto non validato restituito al client;
+- blocco metadata/link-local e redazione delle origini remote;
 - nessuna modifica alle VPS.
