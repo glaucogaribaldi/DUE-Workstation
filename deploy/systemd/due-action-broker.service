@@ -15,7 +15,8 @@ Environment=HOME=/home/zava
 Environment=PM2_HOME=/home/zava/.pm2
 Environment=NODE_ENV=production
 Environment=BUILD_VERSION=unknown
-ExecStart=/usr/bin/node /opt/due/action-broker/current/dist/index.js
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node /opt/due/action-broker/current/dist/index.js
 Restart=on-failure
 RestartSec=3
 TimeoutStartSec=15
