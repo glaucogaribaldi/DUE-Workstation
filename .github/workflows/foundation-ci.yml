@@ -1,0 +1,96 @@
+name: DUE Foundation CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  repository-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject generated or secret files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          forbidden="$({
+            git ls-files | grep -E '(^|/)(node_modules|dist|\.next|out|coverage|\.wrangler|\.sites-runtime|outputs|work|\.cache|\.turbo)(/|$)' || true
+            git ls-files | grep -E '(^|/).*\.log$' || true
+            git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '(^|/)\.env\.example$' || true
+            git ls-files | grep -E '\.(pem|key|crt)$' || true
+          } | sort -u)"
+
+          if [ -n "$forbidden" ]; then
+            echo "Forbidden tracked files detected:"
+            echo "$forbidden"
+            exit 1
+          fi
+
+      - name: Enforce focused pull requests
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" | wc -l | tr -d ' ')"
+          echo "Changed files: $count"
+          if [ "$count" -gt 100 ]; then
+            echo "Pull request exceeds the 100-file safety limit. Split the work."
+            exit 1
+          fi
+
+  frontend-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build > /tmp/due-build.log 2>&1
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: due-build-log
+          path: /tmp/due-build.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Show build failure
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Build failed. Last 120 lines:"
+          tail -n 120 /tmp/due-build.log
+          exit 1
+
+      - name: Test rendered artifact
+        if: steps.build.outcome == 'success'
+        run: node --test tests/rendered-html.test.mjs
