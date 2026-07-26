@@ -1,134 +1,276 @@
-import Fastify from 'fastify';
-import * as fs from 'fs';
-import { ActionRequestSchema, AuditLogSchema, ActionResponseSchema, ActionRequest } from '@contracts/index';
-import { describeProcess as defaultDescribeProcess } from './pm2-adapter';
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import * as fs from "node:fs";
+import * as net from "node:net";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import {
+  ActionRequestSchema,
+  ActionResponseSchema,
+  AuditLogSchema,
+  type BrokerErrorCode,
+} from "../../../packages/action-contracts/index";
+import { describeProcess as defaultDescribeProcess } from "./pm2-adapter";
 
-const SOCKET_PATH = '/run/due-action-broker/broker.sock';
-const BUILD_VERSION = process.env.BUILD_VERSION || '1.0.0-r2a';
+export const SOCKET_PATH = "/run/due-action-broker/broker.sock";
+const BUILD_VERSION = process.env.BUILD_VERSION || "1.0.0-r2a";
+const UuidSchema = z.string().uuid();
 
-export const buildApp = (describeProcessFn = defaultDescribeProcess) => {
+type RawRecord = Record<string, unknown>;
+type SocketProbe = (socketPath: string) => Promise<boolean>;
+
+function asRecord(value: unknown): RawRecord | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as RawRecord)
+    : null;
+}
+
+function safeRequestId(body: RawRecord | null): string {
+  const candidate = body?.requestId;
+  return UuidSchema.safeParse(candidate).success ? (candidate as string) : randomUUID();
+}
+
+function writeAudit(input: {
+  requestId: string;
+  actorId: string;
+  actorRole: string;
+  action: string;
+  target: string;
+  success: boolean;
+  latencyMs: number;
+  errorCode?: BrokerErrorCode;
+}): void {
+  const parsed = AuditLogSchema.safeParse({
+    schema: "audit.1.0",
+    timestamp: new Date().toISOString(),
+    requestId: input.requestId,
+    actorId: input.actorId,
+    actorRole: input.actorRole,
+    action: input.action,
+    target: input.target,
+    success: input.success,
+    latencyMs: Math.max(0, Math.round(input.latencyMs)),
+    errorCode: input.errorCode,
+    brokerPid: process.pid,
+    buildVersion: BUILD_VERSION,
+  });
+
+  if (parsed.success) {
+    process.stdout.write(`${JSON.stringify(parsed.data)}\n`);
+    return;
+  }
+
+  process.stderr.write(
+    `${JSON.stringify({
+      schema: "audit.failure.1.0",
+      timestamp: new Date().toISOString(),
+      requestId: input.requestId,
+      error: "AUDIT_VALIDATION_FAILED",
+    })}\n`,
+  );
+}
+
+function sendError(
+  reply: FastifyReply,
+  statusCode: number,
+  requestId: string,
+  code: BrokerErrorCode,
+  message: string,
+) {
+  return reply.code(statusCode).send(
+    ActionResponseSchema.parse({
+      schemaVersion: "1.0",
+      requestId,
+      timestamp: new Date().toISOString(),
+      error: { code, message },
+    }),
+  );
+}
+
+export const buildApp = (describeProcessFn = defaultDescribeProcess): FastifyInstance => {
   const fastify = Fastify({ logger: false });
 
-  fastify.post('/v1/actions', async (request, reply) => {
+  fastify.post("/v1/actions", async (request, reply) => {
     const startedAt = Date.now();
-    let auditReqId = '00000000-0000-0000-0000-000000000000';
-    let actorId = 'unknown';
-    let actorRole = 'unknown';
-    let action = 'unknown';
-    let target = 'unknown';
+    const rawBody = asRecord(request.body);
+    const requestId = safeRequestId(rawBody);
+    let actorId = "unknown";
+    let actorRole = "unknown";
+    let action = "unknown";
+    let target = "unknown";
+
+    const rawAction = rawBody?.action;
+    if (typeof rawAction === "string" && rawAction !== "service.inspect") {
+      writeAudit({
+        requestId,
+        actorId,
+        actorRole,
+        action,
+        target,
+        success: false,
+        latencyMs: Date.now() - startedAt,
+        errorCode: "FORBIDDEN_ACTION",
+      });
+      return sendError(reply, 403, requestId, "FORBIDDEN_ACTION", "Action is not allowlisted");
+    }
+
+    const rawTarget = rawBody?.target;
+    if (typeof rawTarget === "string" && rawTarget !== "pianodivino-ui") {
+      writeAudit({
+        requestId,
+        actorId,
+        actorRole,
+        action: rawAction === "service.inspect" ? rawAction : action,
+        target,
+        success: false,
+        latencyMs: Date.now() - startedAt,
+        errorCode: "FORBIDDEN_TARGET",
+      });
+      return sendError(reply, 403, requestId, "FORBIDDEN_TARGET", "Target is not allowlisted");
+    }
+
+    const parsedRequest = ActionRequestSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      writeAudit({
+        requestId,
+        actorId,
+        actorRole,
+        action,
+        target,
+        success: false,
+        latencyMs: Date.now() - startedAt,
+        errorCode: "INVALID_REQUEST",
+      });
+      return sendError(reply, 400, requestId, "INVALID_REQUEST", "Invalid payload schema");
+    }
+
+    const parsed = parsedRequest.data;
+    actorId = parsed.actor.id;
+    actorRole = parsed.actor.role;
+    action = parsed.action;
+    target = parsed.target;
 
     try {
-      const body: unknown = request.body;
-      if (body && typeof body === 'object' && 'requestId' in body) {
-        auditReqId = String((body as Record<string, unknown>).requestId);
-      } else {
-        auditReqId = crypto.randomUUID();
+      const processStatus = await describeProcessFn(parsed.target);
+      if (!processStatus) {
+        writeAudit({
+          requestId,
+          actorId,
+          actorRole,
+          action,
+          target,
+          success: false,
+          latencyMs: Date.now() - startedAt,
+          errorCode: "SERVICE_NOT_FOUND",
+        });
+        return sendError(reply, 404, requestId, "SERVICE_NOT_FOUND", "Process not found");
       }
 
-      const parsed = ActionRequestSchema.parse(body);
-      actorId = parsed.actor.id;
-      actorRole = parsed.actor.role;
-      action = parsed.action;
-      target = parsed.target;
-
-      if (parsed.action === 'service.inspect' && parsed.target === 'pianodivino-ui') {
-        try {
-          const procStatus = await describeProcessFn(parsed.target);
-          if (!procStatus) {
-            writeAudit(auditReqId, actorId, actorRole, action, target, false, Date.now() - startedAt, 'SERVICE_NOT_FOUND');
-            return reply.code(404).send(ActionResponseSchema.parse({
-              schemaVersion: '1.0',
-              requestId: auditReqId,
-              timestamp: new Date().toISOString(),
-              error: { code: 'SERVICE_NOT_FOUND', message: 'Process not found' }
-            }));
-          }
-
-          writeAudit(auditReqId, actorId, actorRole, action, target, true, Date.now() - startedAt);
-          return reply.code(200).send(ActionResponseSchema.parse({
-            schemaVersion: '1.0',
-            requestId: auditReqId,
-            timestamp: new Date().toISOString(),
-            result: procStatus
-          }));
-
-        } catch (e: unknown) {
-          writeAudit(auditReqId, actorId, actorRole, action, target, false, Date.now() - startedAt, 'PM2_UNAVAILABLE');
-          return reply.code(503).send(ActionResponseSchema.parse({
-            schemaVersion: '1.0',
-            requestId: auditReqId,
-            timestamp: new Date().toISOString(),
-            error: { code: 'PM2_UNAVAILABLE', message: 'PM2 is unavailable or timed out' }
-          }));
-        }
-      } else {
-        writeAudit(auditReqId, actorId, actorRole, action, target, false, Date.now() - startedAt, 'FORBIDDEN');
-        return reply.code(403).send(ActionResponseSchema.parse({
-          schemaVersion: '1.0',
-          requestId: auditReqId,
-          timestamp: new Date().toISOString(),
-          error: { code: 'FORBIDDEN', message: 'Action or target forbidden' }
-        }));
-      }
-
-    } catch (e: unknown) {
-      writeAudit(auditReqId, actorId, actorRole, action, target, false, Date.now() - startedAt, 'BAD_REQUEST');
-      return reply.code(400).send({
-        schemaVersion: '1.0',
-        requestId: auditReqId,
+      const response = ActionResponseSchema.parse({
+        schemaVersion: "1.0",
+        requestId,
         timestamp: new Date().toISOString(),
-        error: { code: 'BAD_REQUEST', message: 'Invalid payload schema' }
+        result: processStatus,
       });
+      writeAudit({
+        requestId,
+        actorId,
+        actorRole,
+        action,
+        target,
+        success: true,
+        latencyMs: Date.now() - startedAt,
+      });
+      return reply.code(200).send(response);
+    } catch {
+      writeAudit({
+        requestId,
+        actorId,
+        actorRole,
+        action,
+        target,
+        success: false,
+        latencyMs: Date.now() - startedAt,
+        errorCode: "PM2_UNAVAILABLE",
+      });
+      return sendError(
+        reply,
+        503,
+        requestId,
+        "PM2_UNAVAILABLE",
+        "PM2 is unavailable or timed out",
+      );
     }
   });
 
   return fastify;
 };
 
-function writeAudit(requestId: string, actorId: string, actorRole: string, action: string, target: string, success: boolean, latencyMs: number, errorCode?: string) {
-  const log = AuditLogSchema.parse({
-    schema: 'audit.1.0',
-    timestamp: new Date().toISOString(),
-    requestId,
-    actorId,
-    actorRole,
-    action,
-    target,
-    success,
-    latencyMs,
-    errorCode,
-    brokerPid: process.pid,
-    buildVersion: BUILD_VERSION
+export const probeSocketActive: SocketProbe = async (socketPath) =>
+  new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+
+    const finish = (active: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(active);
+    };
+
+    socket.once("connect", () => finish(true));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      finish(!["ECONNREFUSED", "ENOENT"].includes(error.code ?? ""));
+    });
+    socket.setTimeout(250, () => finish(true));
   });
-  process.stdout.write(JSON.stringify(log) + '\n');
+
+export async function prepareSocketPath(
+  socketPath: string,
+  probe: SocketProbe = probeSocketActive,
+  expectedUid = typeof process.getuid === "function" ? process.getuid() : undefined,
+): Promise<void> {
+  if (!fs.existsSync(socketPath)) return;
+
+  const initial = fs.lstatSync(socketPath);
+  if (initial.isSymbolicLink() || !initial.isSocket()) {
+    throw new Error("Socket path exists but is not a broker-owned Unix socket");
+  }
+  if (expectedUid !== undefined && initial.uid !== expectedUid) {
+    throw new Error("Existing socket is not owned by the broker user");
+  }
+  if (await probe(socketPath)) {
+    throw new Error("Broker socket is already active");
+  }
+
+  const confirmed = fs.lstatSync(socketPath);
+  if (
+    !confirmed.isSocket() ||
+    confirmed.isSymbolicLink() ||
+    confirmed.dev !== initial.dev ||
+    confirmed.ino !== initial.ino ||
+    (expectedUid !== undefined && confirmed.uid !== expectedUid)
+  ) {
+    throw new Error("Socket path changed during stale-socket verification");
+  }
+
+  fs.unlinkSync(socketPath);
 }
 
-export const start = async () => {
-  const app = buildApp();
-  
-  if (fs.existsSync(SOCKET_PATH)) {
-    try {
-      const stats = fs.statSync(SOCKET_PATH);
-      if (stats.isSocket()) {
-        fs.unlinkSync(SOCKET_PATH);
-      } else {
-        throw new Error('Path exists and is not a socket');
-      }
-    } catch (e: unknown) {
-      console.error('Failed to cleanup stale socket:', e);
-      process.exit(1);
-    }
-  }
-
-  try {
-    await app.listen({ path: SOCKET_PATH });
-    fs.chmodSync(SOCKET_PATH, '0660');
-  } catch (err) {
-    console.error(err);
-    process.exit(1);
-  }
-};
+export async function start(
+  socketPath = SOCKET_PATH,
+  app: FastifyInstance = buildApp(),
+): Promise<FastifyInstance> {
+  await prepareSocketPath(socketPath);
+  await app.listen({ path: socketPath });
+  fs.chmodSync(socketPath, 0o660);
+  return app;
+}
 
 if (require.main === module) {
-  start();
+  void start().catch((error: unknown) => {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : "Action Broker startup failed"}\n`,
+    );
+    process.exitCode = 1;
+  });
 }
