@@ -33,6 +33,10 @@ git checkout master
 git reset --hard origin/master
 test "$(git rev-parse HEAD)" = "2fece0f45150c1ab1bd582e5dc28a932f0e52f60"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+NODE_BIN="$(command -v node)"
+NODE_DIR="$(dirname "$NODE_BIN")"
+test -x "$NODE_BIN"
+node --version
 pm2 describe pianodivino-ui
 pgrep -af 'due-action-broker|dist/index.js' || true
 sudo systemctl is-active due-action-broker.service || true
@@ -77,7 +81,8 @@ Il processo systemd legge il codice da `/opt/due/action-broker/current`, non dal
 
 ```bash
 sudo install -d -o root -g root -m 0755 /etc/due
-printf 'BUILD_VERSION=%s\nNODE_ENV=production\nHOME=/home/zava\nPM2_HOME=/home/zava/.pm2\n' "$COMMIT" \
+printf 'BUILD_VERSION=%s\nNODE_ENV=production\nHOME=/home/zava\nPM2_HOME=/home/zava/.pm2\nPATH=%s:/usr/local/bin:/usr/bin:/bin\n' \
+  "$COMMIT" "$NODE_DIR" \
   | sudo tee /etc/due/action-broker.env >/dev/null
 sudo chown root:root /etc/due/action-broker.env
 sudo chmod 0644 /etc/due/action-broker.env
@@ -162,6 +167,7 @@ UNO deve creare un report successivo in `docs/reports/` contenente:
 
 - commit installato;
 - path release;
+- runtime Node effettivo;
 - output redatto di `systemctl`;
 - proprietà e permessi socket;
 - risposta JSON redatta;
