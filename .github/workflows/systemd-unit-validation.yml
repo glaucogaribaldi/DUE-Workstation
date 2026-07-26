@@ -1,0 +1,37 @@
+name: Systemd Unit Validation
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/systemd/**'
+      - 'docs/reports/r2a-systemd-promotion.md'
+  push:
+    paths:
+      - 'deploy/systemd/**'
+      - 'docs/reports/r2a-systemd-promotion.md'
+
+jobs:
+  validate-systemd-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare validation filesystem
+        run: |
+          sudo useradd --create-home zava || true
+          sudo install -d -o root -g root -m 0755 /opt/due/action-broker/current/dist
+          sudo install -d -o zava -g zava -m 0700 /home/zava/.pm2
+          sudo touch /opt/due/action-broker/current/dist/index.js
+
+      - name: Verify unit syntax
+        run: systemd-analyze verify deploy/systemd/due-action-broker.service
+
+      - name: Enforce local-only hardening
+        run: |
+          grep -Fx 'RestrictAddressFamilies=AF_UNIX' deploy/systemd/due-action-broker.service
+          grep -Fx 'NoNewPrivileges=true' deploy/systemd/due-action-broker.service
+          grep -Fx 'RuntimeDirectory=due-action-broker' deploy/systemd/due-action-broker.service
+          grep -Fx 'RuntimeDirectoryMode=0770' deploy/systemd/due-action-broker.service
+          grep -Fx 'User=zava' deploy/systemd/due-action-broker.service
+          grep -Fx 'Group=zava' deploy/systemd/due-action-broker.service
+          ! grep -E 'ListenStream|0\.0\.0\.0|nginx|ExecStart=.*(bash|sh|curl)' deploy/systemd/due-action-broker.service
