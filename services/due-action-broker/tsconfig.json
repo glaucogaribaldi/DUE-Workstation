@@ -8,11 +8,12 @@
     "noImplicitAny": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "./dist",
-    "baseUrl": ".",
-    "paths": {
-      "@contracts/*": ["../../packages/action-contracts/*"]
-    }
+    "noEmit": true,
+    "types": ["node"]
   },
-  "include": ["src/**/*", "../../packages/action-contracts/**/*", "tests/**/*"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "../../packages/action-contracts/**/*.ts"
+  ]
 }
