@@ -1,0 +1,42 @@
+name: Action Broker Validation
+
+on:
+  push:
+    paths:
+      - 'packages/action-contracts/**'
+      - 'services/due-action-broker/**'
+  pull_request:
+    paths:
+      - 'packages/action-contracts/**'
+      - 'services/due-action-broker/**'
+
+jobs:
+  action-broker-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          
+      - name: Install Action Contracts
+        working-directory: ./packages/action-contracts
+        run: npm ci
+          
+      - name: Install Broker
+        working-directory: ./services/due-action-broker
+        run: npm ci
+        
+      - name: Typecheck
+        working-directory: ./services/due-action-broker
+        run: npm run typecheck
+        
+      - name: Build
+        working-directory: ./services/due-action-broker
+        run: npm run build
+        
+      - name: Test
+        working-directory: ./services/due-action-broker
+        run: npm run test
