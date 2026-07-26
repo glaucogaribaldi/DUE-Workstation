@@ -1,0 +1,21 @@
+{
+  "name": "due-action-broker",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/services/due-action-broker/src/index.js",
+    "test": "node --import tsx --test ../../tests/action-broker/broker.test.ts"
+  },
+  "dependencies": {
+    "action-contracts": "file:../../packages/action-contracts",
+    "fastify": "^5.0.0",
+    "pm2": "^5.4.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.0.0"
+  }
+}
