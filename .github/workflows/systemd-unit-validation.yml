@@ -21,10 +21,21 @@ jobs:
           sudo useradd --create-home zava || true
           sudo install -d -o root -g root -m 0755 /opt/due/action-broker/current/dist
           sudo install -d -o zava -g zava -m 0700 /home/zava/.pm2
+          sudo install -d -o zava -g zava -m 0770 /run/due-action-broker
           sudo touch /opt/due/action-broker/current/dist/index.js
 
       - name: Verify unit syntax
-        run: systemd-analyze verify deploy/systemd/due-action-broker.service
+        run: |
+          set -o pipefail
+          systemd-analyze verify deploy/systemd/due-action-broker.service 2>&1 | tee systemd-verify.log
+
+      - name: Upload unit diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: systemd-unit-diagnostics
+          path: systemd-verify.log
+          if-no-files-found: ignore
 
       - name: Enforce local-only hardening
         run: |
