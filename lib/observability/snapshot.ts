@@ -11,6 +11,8 @@ import {
 const DEFAULT_TIMEOUT_MS = 1_500;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
+type RemoteComponent = Exclude<ObservationComponent, "frontend">;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -46,11 +48,23 @@ function readFrontend(): Observation<FrontendObservationData> {
   };
 }
 
-function isPrivateIpv4(hostname: string): boolean {
+function parseIpv4(hostname: string): number[] | null {
   const octets = hostname.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
-    return false;
+  if (
+    octets.length !== 4 ||
+    octets.some(
+      (value) =>
+        !Number.isInteger(value) || value < 0 || value > 255,
+    )
+  ) {
+    return null;
   }
+  return octets;
+}
+
+function isAllowedPrivateIpv4(hostname: string): boolean {
+  const octets = parseIpv4(hostname);
+  if (!octets) return false;
 
   const [a, b] = octets;
   return (
@@ -70,93 +84,128 @@ function allowedEndpoint(rawUrl: string): URL | null {
     return null;
   }
 
-  if (!["http:", "https:"].includes(url.protocol)) return null;
+  if (!['http:', 'https:'].includes(url.protocol)) return null;
   if (url.username || url.password || url.search || url.hash) return null;
 
   const hostname = url.hostname.toLowerCase();
-  const configuredHosts = (readEnv("DUE_OBSERVABILITY_ALLOWED_HOSTS") ?? "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
+  const configuredHosts = new Set(
+    (readEnv("DUE_OBSERVABILITY_ALLOWED_HOSTS") ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
 
-  const loopbackOrPrivate =
+  const localOrPrivate =
     hostname === "localhost" ||
     hostname === "::1" ||
     hostname === "[::1]" ||
-    isPrivateIpv4(hostname);
+    isAllowedPrivateIpv4(hostname);
 
-  if (!loopbackOrPrivate && !configuredHosts.includes(hostname)) return null;
-  return url;
+  return localOrPrivate || configuredHosts.has(hostname) ? url : null;
 }
 
-function remoteSource(component: Exclude<ObservationComponent, "frontend">): string {
+function remoteSource(component: RemoteComponent): string {
   return `remote:${component}`;
 }
 
-function pickString(payload: Record<string, unknown>, key: string): string | null {
+function pickString(
+  payload: Record<string, unknown>,
+  key: string,
+): string | null {
   const value = payload[key];
   return typeof value === "string" && value.length <= 256 ? value : null;
 }
 
-function normalizeStatus(reportedStatus: string | null, httpOk: boolean): ObservationStatus {
+export function normalizeObservationStatus(
+  reportedStatus: string | null,
+  httpOk: boolean,
+): ObservationStatus {
   if (!httpOk) return "unavailable";
   if (!reportedStatus) return "unknown";
 
   const normalized = reportedStatus.toLowerCase();
-  if (["healthy", "ok", "online", "up", "ready"].includes(normalized)) return "healthy";
-  if (["degraded", "warning", "warn", "partial"].includes(normalized)) return "degraded";
-  if (["unavailable", "offline", "down", "error", "failed"].includes(normalized)) return "unavailable";
+  if (
+    ["healthy", "ok", "online", "up", "ready", "live"].includes(
+      normalized,
+    )
+  ) {
+    return "healthy";
+  }
+  if (["degraded", "warning", "warn", "partial"].includes(normalized)) {
+    return "degraded";
+  }
+  if (
+    ["unavailable", "offline", "down", "error", "failed"].includes(
+      normalized,
+    )
+  ) {
+    return "unavailable";
+  }
   return "unknown";
 }
 
+function remoteData(
+  configured: boolean,
+  overrides: Partial<RemoteObservationData> = {},
+): RemoteObservationData {
+  return {
+    configured,
+    httpStatus: null,
+    latencyMs: null,
+    reportedStatus: null,
+    service: null,
+    version: null,
+    ...overrides,
+  };
+}
+
+function unavailable(
+  component: RemoteComponent,
+  observedAt: string,
+  source: string,
+  configured: boolean,
+  code: string,
+  message: string,
+  overrides: Partial<RemoteObservationData> = {},
+): Observation<RemoteObservationData> {
+  return {
+    component,
+    status: "unavailable",
+    observedAt,
+    source,
+    data: remoteData(configured, overrides),
+    error: { code, message },
+  };
+}
+
 async function readRemote(
-  component: Exclude<ObservationComponent, "frontend">,
+  component: RemoteComponent,
   envName: string,
 ): Promise<Observation<RemoteObservationData>> {
   const configuredUrl = readEnv(envName);
   const observedAt = nowIso();
 
   if (!configuredUrl) {
-    return {
+    return unavailable(
       component,
-      status: "unavailable",
       observedAt,
-      source: `env:${envName}`,
-      data: {
-        configured: false,
-        httpStatus: null,
-        latencyMs: null,
-        reportedStatus: null,
-        service: null,
-        version: null,
-      },
-      error: {
-        code: "NOT_CONFIGURED",
-        message: `${envName} is not configured`,
-      },
-    };
+      `env:${envName}`,
+      false,
+      "NOT_CONFIGURED",
+      `${envName} is not configured`,
+    );
   }
 
   const endpoint = allowedEndpoint(configuredUrl);
   if (!endpoint) {
-    return {
+    return unavailable(
       component,
-      status: "unavailable",
       observedAt,
-      source: `env:${envName}`,
-      data: {
-        configured: true,
-        httpStatus: null,
-        latencyMs: null,
-        reportedStatus: null,
-        service: null,
-        version: null,
-      },
-      error: {
-        code: "ENDPOINT_NOT_ALLOWED",
-        message: "Endpoint must use HTTP(S), contain no credentials, query, or fragment, and target an allowed private host",
-      },
-    };
+      `env:${envName}`,
+      true,
+      "ENDPOINT_NOT_ALLOWED",
+      "Endpoint must use HTTP(S), contain no credentials, query, or fragment, and target an allowed private host",
+    );
   }
 
   const controller = new AbortController();
@@ -174,20 +223,16 @@ async function readRemote(
     const latencyMs = Date.now() - startedAt;
     const body = await response.text();
 
-    if (body.length > MAX_RESPONSE_BYTES) {
+    if (new TextEncoder().encode(body).byteLength > MAX_RESPONSE_BYTES) {
       return {
         component,
         status: "degraded",
         observedAt,
         source: remoteSource(component),
-        data: {
-          configured: true,
+        data: remoteData(true, {
           httpStatus: response.status,
           latencyMs,
-          reportedStatus: null,
-          service: null,
-          version: null,
-        },
+        }),
         error: {
           code: "RESPONSE_TOO_LARGE",
           message: `Health response exceeded ${MAX_RESPONSE_BYTES} bytes`,
@@ -198,7 +243,9 @@ async function readRemote(
     let payload: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(body);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected JSON object");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Expected JSON object");
+      }
       payload = parsed as Record<string, unknown>;
     } catch {
       return {
@@ -206,14 +253,10 @@ async function readRemote(
         status: response.ok ? "degraded" : "unavailable",
         observedAt,
         source: remoteSource(component),
-        data: {
-          configured: true,
+        data: remoteData(true, {
           httpStatus: response.status,
           latencyMs,
-          reportedStatus: null,
-          service: null,
-          version: null,
-        },
+        }),
         error: {
           code: "INVALID_RESPONSE",
           message: "Health endpoint did not return a JSON object",
@@ -224,17 +267,16 @@ async function readRemote(
     const reportedStatus = pickString(payload, "status");
     return {
       component,
-      status: normalizeStatus(reportedStatus, response.ok),
+      status: normalizeObservationStatus(reportedStatus, response.ok),
       observedAt,
       source: remoteSource(component),
-      data: {
-        configured: true,
+      data: remoteData(true, {
         httpStatus: response.status,
         latencyMs,
         reportedStatus,
         service: pickString(payload, "service"),
         version: pickString(payload, "version"),
-      },
+      }),
       error: response.ok
         ? null
         : {
@@ -244,28 +286,19 @@ async function readRemote(
     };
   } catch (error) {
     const aborted = controller.signal.aborted;
-    return {
+    return unavailable(
       component,
-      status: "unavailable",
       observedAt,
-      source: remoteSource(component),
-      data: {
-        configured: true,
-        httpStatus: null,
-        latencyMs: Date.now() - startedAt,
-        reportedStatus: null,
-        service: null,
-        version: null,
-      },
-      error: {
-        code: aborted ? "TIMEOUT" : "FETCH_FAILED",
-        message: aborted
-          ? `Health endpoint exceeded ${DEFAULT_TIMEOUT_MS} ms`
-          : error instanceof Error
-            ? error.message
-            : "Unknown fetch failure",
-      },
-    };
+      remoteSource(component),
+      true,
+      aborted ? "TIMEOUT" : "FETCH_FAILED",
+      aborted
+        ? `Health endpoint exceeded ${DEFAULT_TIMEOUT_MS} ms`
+        : error instanceof Error
+          ? error.message
+          : "Unknown fetch failure",
+      { latencyMs: Date.now() - startedAt },
+    );
   } finally {
     clearTimeout(timeout);
   }
