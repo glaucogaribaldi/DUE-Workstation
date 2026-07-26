@@ -2,7 +2,7 @@ import * as pm2 from "pm2";
 import type { Pm2ProcessState, Pm2Status } from "../../../packages/action-contracts/index";
 
 export interface Pm2Client {
-  connect(callback: (error: Error | null) => void): void;
+  connect(callback: (error?: Error) => void): void;
   describe(
     target: string,
     callback: (error: Error | null, processes: pm2.ProcessDescription[]) => void,
@@ -37,7 +37,7 @@ function safeDisconnect(client: Pm2Client): void {
 export async function describeProcess(
   target: string,
   timeoutMs = 2_000,
-  client: Pm2Client = pm2,
+  client: Pm2Client = pm2 as unknown as Pm2Client,
 ): Promise<Pm2Status | null> {
   if (target !== "pianodivino-ui") {
     throw new Error("Target is not allowlisted");
