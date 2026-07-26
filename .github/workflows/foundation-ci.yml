@@ -66,5 +66,16 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Build and test
-        run: npm test
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run build > /tmp/due-build.log 2>&1; then
+            echo "Build failed. Last 120 lines:"
+            tail -n 120 /tmp/due-build.log
+            exit 1
+          fi
+          tail -n 30 /tmp/due-build.log
+
+      - name: Test rendered artifact
+        run: node --test tests/rendered-html.test.mjs
