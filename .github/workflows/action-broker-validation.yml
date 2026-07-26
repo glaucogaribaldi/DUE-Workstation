@@ -1,0 +1,61 @@
+name: Action Broker Validation
+
+on:
+  push:
+    paths:
+      - "packages/action-contracts/**"
+      - "services/due-action-broker/**"
+      - ".github/workflows/action-broker-validation.yml"
+  pull_request:
+    paths:
+      - "packages/action-contracts/**"
+      - "services/due-action-broker/**"
+      - ".github/workflows/action-broker-validation.yml"
+
+jobs:
+  action-broker-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install broker dependencies
+        working-directory: ./services/due-action-broker
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ./services/due-action-broker
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee typecheck.log
+
+      - name: Upload typecheck diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: action-broker-typecheck
+          path: services/due-action-broker/typecheck.log
+          if-no-files-found: ignore
+
+      - name: Build executable artifact
+        working-directory: ./services/due-action-broker
+        run: npm run build
+
+      - name: Test
+        working-directory: ./services/due-action-broker
+        run: npm test
+
+      - name: Verify compiled artifact loads
+        working-directory: ./services/due-action-broker
+        run: node -e "const broker=require('./dist/index.js'); if(typeof broker.buildApp!=='function'||typeof broker.start!=='function') process.exit(1)"
+
+      - name: Reject shell execution paths
+        run: |
+          if grep -RInE 'child_process|\bexec\s*\(|\bspawn\s*\(' services/due-action-broker/src; then
+            echo 'Forbidden shell execution path detected'
+            exit 1
+          fi
