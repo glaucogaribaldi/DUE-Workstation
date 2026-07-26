@@ -67,15 +67,30 @@ jobs:
         run: npm run lint
 
       - name: Build
+        id: build
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          if ! npm run build > /tmp/due-build.log 2>&1; then
-            echo "Build failed. Last 120 lines:"
-            tail -n 120 /tmp/due-build.log
-            exit 1
-          fi
-          tail -n 30 /tmp/due-build.log
+          npm run build > /tmp/due-build.log 2>&1
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: due-build-log
+          path: /tmp/due-build.log
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Show build failure
+        if: steps.build.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "Build failed. Last 120 lines:"
+          tail -n 120 /tmp/due-build.log
+          exit 1
 
       - name: Test rendered artifact
+        if: steps.build.outcome == 'success'
         run: node --test tests/rendered-html.test.mjs
